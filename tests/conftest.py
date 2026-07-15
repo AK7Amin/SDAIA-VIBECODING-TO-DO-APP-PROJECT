@@ -21,6 +21,9 @@ def app():
             "TESTING": True,
             "DATABASE": db_path,
             "SECRET_KEY": "test-only-secret",  # for tests only; real runs use .env
+            # CSRF is covered by its own suite (test_csrf.py, which enables
+            # it); switched off here so other tests stay single-purpose.
+            "CSRF_ENABLED": False,
         }
     )
     yield app

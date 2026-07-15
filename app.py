@@ -8,7 +8,9 @@ CLAUDE.md §1 rules applied here:
 - Secrets: SECRET_KEY comes from the environment; the app refuses to start
   without one rather than falling back to a guessable default.
 """
+import hmac
 import os
+import secrets
 import sqlite3
 import time
 
@@ -51,6 +53,11 @@ def create_app(config=None):
     app.config.update(
         DATABASE=os.environ.get("DATABASE", "todo.db"),
         SECRET_KEY=os.environ.get("SECRET_KEY", ""),
+        # Session cookie hardening: unreadable from page JS, and never sent
+        # on cross-site requests initiated by other origins.
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        CSRF_ENABLED=True,  # tests for OTHER features may switch this off
     )
     if config:
         app.config.update(config)
@@ -79,11 +86,47 @@ def create_app(config=None):
         if db is not None:
             db.close()
 
+    register_csrf_protection(app)
     register_routes(app)
     register_task_routes(app)
     register_page_routes(app)
     register_error_handlers(app)
     return app
+
+
+def get_csrf_token():
+    """The session's CSRF token, minted on first use."""
+    if "csrf_token" not in session:
+        session["csrf_token"] = secrets.token_hex(32)
+    return session["csrf_token"]
+
+
+def register_csrf_protection(app):
+    """Double-submit CSRF defense: every state-changing request must echo the
+    session's token (X-CSRF-Token header or csrf_token form field). A forged
+    cross-site request carries the cookie but cannot know the token."""
+
+    @app.before_request
+    def enforce_csrf():
+        if not app.config["CSRF_ENABLED"]:
+            return None
+        if request.method not in ("POST", "PATCH", "DELETE", "PUT"):
+            return None
+        sent = (
+            request.headers.get("X-CSRF-Token")
+            or request.form.get("csrf_token")
+            or ""
+        )
+        expected = session.get("csrf_token", "")
+        # compare_digest: constant-time comparison, no timing leaks.
+        if not expected or not hmac.compare_digest(sent, expected):
+            return jsonify(error="Invalid or missing CSRF token."), 403
+        return None
+
+    @app.context_processor
+    def inject_csrf_token():
+        # Templates embed the token in a <meta> tag; page JS sends it back.
+        return {"csrf_token": get_csrf_token}
 
 
 def get_db():
@@ -157,6 +200,8 @@ def register_routes(app):
         failed.pop(email, None)
         session.clear()
         session["user_id"] = row["id"]
+        # Fresh CSRF token for the new session (rotation on privilege change).
+        session["csrf_token"] = secrets.token_hex(32)
         return jsonify(message="Logged in."), 200
 
     @app.post("/logout")

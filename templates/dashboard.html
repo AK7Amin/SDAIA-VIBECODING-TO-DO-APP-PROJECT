@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="csrf-token" content="{{ csrf_token() }}">
 <title>Secure To-Do — My Tasks</title>
 <style>
   body { font-family: system-ui, sans-serif; background: #f4f5f7; margin: 0; }
@@ -49,8 +50,10 @@ const errorBox = document.getElementById("error");
 
 function showError(msg) { errorBox.textContent = msg || ""; }
 
+const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]').content;
+
 async function api(url, method, data) {
-  const opts = { method };
+  const opts = { method, headers: { "X-CSRF-Token": CSRF_TOKEN } };
   if (data) opts.body = new URLSearchParams(data);
   const resp = await fetch(url, opts);
   const body = await resp.json().catch(() => ({}));
@@ -139,7 +142,7 @@ document.getElementById("add-form").addEventListener("submit", async (e) => {
 });
 
 document.getElementById("logout").addEventListener("click", async () => {
-  await fetch("/logout", { method: "POST" });
+  await fetch("/logout", { method: "POST", headers: { "X-CSRF-Token": CSRF_TOKEN } });
   window.location.href = "/login";
 });
 
