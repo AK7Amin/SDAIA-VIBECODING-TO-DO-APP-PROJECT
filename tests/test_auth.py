@@ -179,3 +179,57 @@ class TestLockoutExpiry:
         # correct password.
         advance_time(monkeypatch, app_module.LOCKOUT_SECONDS - 60)
         assert login(client).status_code == 429
+
+
+# --- Security fix #3: password strength (Medium) ------------------------------
+
+
+class TestPasswordStrength:
+    def test_too_short_password_rejected(self, client):
+        resp = register(client, email="new@example.com", password="short7!")  # 7 chars
+        assert resp.status_code == 400
+
+    def test_eight_char_password_accepted(self, client):
+        resp = register(client, email="new@example.com", password="eightch8")  # exactly 8
+        assert resp.status_code == 201
+
+    def test_over_72_bytes_rejected(self, client):
+        # bcrypt silently truncates at 72 bytes: a 100-char password would let
+        # a different 100-char password with the same first 72 chars log in.
+        resp = register(client, email="new@example.com", password="a" * 73)
+        assert resp.status_code == 400
+
+
+# --- Security fix #4: email format validation (Low) ---------------------------
+
+
+class TestEmailValidation:
+    @pytest.mark.parametrize(
+        "bad_email",
+        ["not-an-email", "missing@tld", "@no-local.com", "spaces in@email.com", "a" * 250 + "@x.com"],
+    )
+    def test_malformed_email_rejected(self, client, bad_email):
+        resp = register(client, email=bad_email, password=PASSWORD)
+        assert resp.status_code == 400, f"accepted bad email: {bad_email!r}"
+
+    def test_valid_email_accepted(self, client):
+        assert register(client, email="good.name@example.co", password=PASSWORD).status_code == 201
+
+
+# --- Security fix #5: no user enumeration via timing (Low) --------------------
+
+
+class TestTimingEnumeration:
+    def test_unknown_email_still_runs_a_hash_check(self, client, monkeypatch):
+        """A login for a non-existent email must still call bcrypt.checkpw,
+        otherwise the faster response reveals which emails have accounts."""
+        register(client)  # creates EMAIL
+
+        calls = []
+        real_checkpw = bcrypt.checkpw
+        monkeypatch.setattr(
+            bcrypt, "checkpw", lambda *a, **k: calls.append(1) or real_checkpw(*a, **k)
+        )
+
+        login(client, email="does-not-exist@example.com", password="whatever")
+        assert calls, "no hash performed for unknown email — timing leak"

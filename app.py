@@ -10,6 +10,7 @@ CLAUDE.md §1 rules applied here:
 """
 import hmac
 import os
+import re
 import secrets
 import sqlite3
 import time
@@ -27,10 +28,35 @@ LOCKOUT_SECONDS = 15 * 60  # PRD requires a TEMPORARY block, not a permanent one
 
 MAX_TITLE_LENGTH = 200
 
+MIN_PASSWORD_LENGTH = 8
+MAX_PASSWORD_BYTES = 72  # bcrypt silently truncates beyond this — reject instead
+MAX_EMAIL_LENGTH = 254   # RFC 5321 practical maximum
+# Deliberately simple: exactly one @, non-empty local part, a dotted domain,
+# and no spaces. Not RFC-perfect, but enough to reject obvious garbage.
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+# A fixed bcrypt hash of a throwaway password. When a login targets an email
+# that doesn't exist, we still run checkpw against THIS, so the response takes
+# the same time as a real (but wrong-password) login — no user enumeration.
+_DUMMY_HASH = bcrypt.hashpw(b"dummy-password-for-timing", bcrypt.gensalt())
+
 
 def now():
     """Current time — a seam so tests can fast-forward the clock."""
     return time.time()
+
+
+def validate_credentials(email, password):
+    """Return an error string if the email/password are unacceptable, else None."""
+    if not email or not password:
+        return "Email and password are required."
+    if len(email) > MAX_EMAIL_LENGTH or not EMAIL_RE.match(email):
+        return "Enter a valid email address."
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+    if len(password.encode("utf-8")) > MAX_PASSWORD_BYTES:
+        return f"Password must be at most {MAX_PASSWORD_BYTES} bytes."
+    return None
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -145,8 +171,9 @@ def register_routes(app):
         email = (request.form.get("email") or "").strip().lower()
         password = request.form.get("password") or ""
 
-        if not email or not password:
-            return jsonify(error="Email and password are required."), 400
+        error = validate_credentials(email, password)
+        if error:
+            return jsonify(error=error), 400
 
         pw_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
 
@@ -185,9 +212,12 @@ def register_routes(app):
             "SELECT id, password_hash FROM users WHERE email = ?", (email,)
         ).fetchone()
 
-        ok = row is not None and bcrypt.checkpw(
-            password.encode("utf-8"), row["password_hash"].encode("utf-8")
-        )
+        # Always run a hash check — against the real hash if the user exists,
+        # else against a dummy — so both paths take the same time (no timing
+        # side-channel revealing which emails are registered).
+        stored_hash = row["password_hash"].encode("utf-8") if row else _DUMMY_HASH
+        password_ok = bcrypt.checkpw(password.encode("utf-8"), stored_hash)
+        ok = row is not None and password_ok
 
         if not ok:
             entry = failed.setdefault(email, {"count": 0, "locked_until": None})
