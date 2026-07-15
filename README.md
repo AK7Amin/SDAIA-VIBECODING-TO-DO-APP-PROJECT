@@ -1,7 +1,7 @@
 # Team:
-Abdulaziz Mulia
-Feras Al-Harbi
-Faisal Al-Abdul-Jabbar
+-Abdulaziz Mulia
+-Feras Al-Harbi
+-Faisal Al-Abdul-Jabbar
 
 # 🔐 Secure To-Do App — تطبيق مهام آمن
 
