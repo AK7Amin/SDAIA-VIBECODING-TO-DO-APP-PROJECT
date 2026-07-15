@@ -50,8 +50,11 @@ def snap(page, save_as=None, hold=1):
         frames.append(png)
 
 
-def add_task(page, title):
+def add_task(page, title, priority="2", due_date=""):
     page.fill("#new-title", title)
+    page.select_option("#new-priority", priority)
+    if due_date:
+        page.fill("#new-due", due_date)
     page.click("#add-form button")
     page.wait_for_timeout(300)
 
@@ -87,11 +90,12 @@ def main():
         page.wait_for_timeout(300)
         snap(page)  # empty dashboard
 
-        # 4. Add tasks
-        add_task(page, "Prepare the 5-minute demo")
+        # 4. Add tasks with different priorities and due dates (shows badges)
+        add_task(page, "Submit the workshop project", priority="3", due_date="2026-07-10")
         snap(page)
-        add_task(page, "Show a failing test go green (TDD)")
-        add_task(page, "Present the CSRF fix from SECURITY.md")
+        add_task(page, "Review the security fixes", priority="3", due_date="2026-07-15")
+        add_task(page, "Plan next sprint", priority="2", due_date="2026-09-01")
+        add_task(page, "Read about CSP headers", priority="1")
         snap(page, save_as="dashboard.png", hold=2)
 
         # 5. Complete the first task

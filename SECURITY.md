@@ -1,6 +1,6 @@
 # Security Review — Step 8 (slide 81)
 
-> ملخص: مراجعة أمنية كاملة للكود كشفت ثغرتين بخطورة High — قفلُ حسابٍ دائم يمكّن المهاجم من حجب الضحية، وغيابُ حماية CSRF. أُصلحتا كلتاهما بأسلوب TDD (اختبار فاشل يثبت الثغرة ← إصلاح ← اختبار ناجح) في الكومِتين `a89fa82` و `06a27c2`.
+> ملخص: مراجعة أمنية كاملة للكود كشفت **7 ثغرات** (اثنتان High، ثلاث Medium، اثنتان Low) — **كلها أُصلحت** بأسلوب TDD (اختبار فاشل يثبت الثغرة ← إصلاح ← اختبار ناجح). المتبقي بنود خارج نطاق الورشة فقط (CSP صارمة، حد لكل IP، خادم الإنتاج).
 
 Full review of the codebase against: SQL injection, XSS, CSRF, exposed
 secrets, unvalidated input, unprotected endpoints.
@@ -55,13 +55,20 @@ secrets, unvalidated input, unprotected endpoints.
   legit fetch → **201**, `document.cookie` returns empty (HttpOnly works).
 - **Commit:** `06a27c2`.
 
-## Remaining findings (documented, not yet fixed)
+## Findings 3-7 — all FIXED in Phase 1 (each via TDD)
 
-| # | Finding | Severity | Suggested fix |
+| # | Finding | Severity | Fix | Commit |
+|---|---|---|---|---|
+| 3 | Password strength: a 1-char password was accepted | Medium | `validate_credentials()` requires ≥ 8 chars, rejects > 72 bytes (bcrypt truncation) | `2e5c0c2` |
+| 4 | Email format not validated server-side | Low | regex + length ≤ 254 on register | `2e5c0c2` |
+| 5 | User enumeration via timing: unknown email skipped bcrypt (faster reply) | Low | `/login` always runs `bcrypt.checkpw` against a dummy hash when the email is unknown | `2e5c0c2` |
+| 6 | Failed-login map unbounded (memory DoS via fake emails) | Medium | `prune_failed_logins()` caps the map at 10k and sweeps expired locks | `a06d982` |
+| 7 | No security headers | Medium | `after_request` adds `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` | `a06d982` |
+
+## Remaining (out of scope / deferred)
+
+| # | Finding | Severity | Note |
 |---|---|---|---|
-| 3 | Failed-login map unbounded (memory DoS via fake emails); limit is per-email only, so low-and-slow password spraying across many accounts is uncounted | Medium | Cap map size + periodic sweep of expired entries; add a per-IP limit |
-| 4 | No password strength minimum (a 1-character password is accepted) | Medium | Require ≥ 8 chars; reject > 72 bytes (bcrypt truncation limit) |
-| 5 | No security headers (`X-Content-Type-Options`, `X-Frame-Options`, CSP) | Medium | `after_request` hook adding the three headers |
-| 6 | User enumeration via timing: unknown email skips bcrypt and answers faster | Low | Compare against a dummy hash when the user doesn't exist |
-| 7 | Email format not validated server-side | Low | Minimal regex / length check on register |
-| 8 | Flask dev server + SQLite | Info | Workshop scope by design; use a WSGI server + managed DB for real deployment |
+| 8 | No strict Content-Security-Policy | Low | Deferred: a strict CSP needs the inline JS/CSS moved to static files first. The three headers above are in place today. |
+| 9 | Per-IP rate limiting | Low | Current limit is per-email; low-and-slow spraying across many accounts is still uncounted. Would need a per-IP counter. |
+| 10 | Flask dev server + SQLite | Info | Workshop scope by design; use a WSGI server + managed DB for real deployment. |

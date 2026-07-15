@@ -23,19 +23,25 @@ The full journey: register → log in → add tasks → complete → delete → 
 - **Auth:** register & login with email + password (bcrypt-hashed, never plain text)
 - **Rate limiting:** 5 failed logins → temporary 15-minute lock (HTTP 429)
 - **Task CRUD:** add, list, inline-edit (click the title), complete, delete (with confirm)
+- **Due dates & priority:** each task has an optional due date and a priority
+  (low / normal / high). The list auto-sorts (active first → higher priority →
+  earliest due date) and shows coloured badges: red = overdue, amber = today,
+  grey = upcoming
+- **Filters:** view All / Active / Completed / Overdue
 - **Ownership everywhere (no IDOR):** every task query is scoped to the logged-in
   user — someone else's task id answers `404` as if it doesn't exist
 - **CSRF protection:** state-changing requests require a per-session token;
   session cookie is `SameSite=Lax` + `HttpOnly`
 - **Validation:** task title required, ≤ 200 chars, HTML rejected before it
-  ever reaches the database (no stored XSS)
+  ever reaches the database (no stored XSS); due date must be valid ISO,
+  priority must be 1–3
 - **Generic errors:** no stack traces, no DB details, no account enumeration
 
 ## 🛡️ Security
 
-The Step-8 security review found **two High-severity vulnerabilities**, proved
-each with a failing test first, fixed them, and documented everything —
-including the remaining Medium/Low findings — in **[SECURITY.md](SECURITY.md)**:
+The Step-8 security review found **7 vulnerabilities** (2 High, 3 Medium, 2 Low)
+and **fixed every one** — each proved with a failing test first — documented in
+**[SECURITY.md](SECURITY.md)**. The two most serious:
 
 1. **Permanent account lockout (DoS)** — an attacker who knew only your email
    could lock you out *forever*. Now the lock expires after 15 minutes.
@@ -53,14 +59,16 @@ it: the first commit contains the failing test suite and *no* `app.py` at all.
 | RED | `e676de5` | Auth tests written first — bcrypt storage, SQL-injection rejection, rate limiting. All failing: no implementation exists |
 | GREEN | `31a466d` | Minimum Flask code turns the suite green (plus a real Windows file-lock bug found & root-caused on the way) |
 | RED→GREEN | `fe4c66e` | Task CRUD: 14 tests first (IDOR, validation, auth-wall), then the routes |
-| UI | `6961f7f` | Minimal HTML/JS pages over the JSON API |
 | Fix 1 | `a89fa82` | Lockout-expiry tests first, then the fix |
 | Fix 2 | `06a27c2` | 6 CSRF tests first, then the protection |
+| RED (only) | `7fafc25` | Due-date + priority tests committed **alone**, no implementation — pure proof tests came first |
+| GREEN | `e50dbf4` | The implementation that turns `7fafc25` green |
 
-**32 tests** cover the happy paths *and* the attacks: SQL injection payloads,
+**52 tests** cover the happy paths *and* the attacks: SQL injection payloads,
 `DROP TABLE` survival, a user probing another user's task ids, forged
-requests without CSRF tokens, and the exact rate-limit threshold (4 failures
-fine, 5 locked, unlocked again after the window).
+requests without CSRF tokens, the exact rate-limit threshold (4 failures
+fine, 5 locked, unlocked again after the window), password/email validation,
+timing-safe login, and due-date/priority ordering.
 
 ## 🚀 Getting started
 
@@ -97,16 +105,19 @@ python scripts/make_demo_media.py   # uses your installed Edge, headless
 ```
 ├── CLAUDE.md              # the rules file — written BEFORE any code
 ├── PRD Claude.md          # one-page product requirements
-├── SECURITY.md            # security review: findings, fixes, evidence
+├── PLAN.md                # phase-2 roadmap (security, features, UI)
+├── SECURITY.md            # security review: 7 findings, all fixed
 ├── app.py                 # Flask app: auth + task CRUD + pages
 ├── templates/
 │   ├── login.html         # login / register page
-│   └── dashboard.html     # task dashboard
+│   └── dashboard.html     # task dashboard (badges, filters)
 ├── tests/
 │   ├── conftest.py        # fresh app + throwaway DB per test
-│   ├── test_auth.py       # bcrypt, SQL injection, rate limiting, lockout expiry
+│   ├── test_auth.py       # bcrypt, SQL injection, rate limit, lockout, pw/email/timing
 │   ├── test_tasks.py      # CRUD, validation, IDOR protection
-│   └── test_csrf.py       # CSRF rejection/acceptance, cookie flags
+│   ├── test_task_fields.py # due dates, priority, ordering
+│   ├── test_csrf.py       # CSRF rejection/acceptance, cookie flags
+│   └── test_headers.py    # security headers on every response
 └── scripts/
     └── make_demo_media.py # generates docs/ screenshots + demo.gif
 ```
