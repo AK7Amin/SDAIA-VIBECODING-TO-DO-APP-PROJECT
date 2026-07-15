@@ -25,6 +25,16 @@ load_dotenv()  # reads .env into the environment; .env is git-ignored, never com
 
 MAX_FAILED_LOGINS = 5
 LOCKOUT_SECONDS = 15 * 60  # PRD requires a TEMPORARY block, not a permanent one
+MAX_TRACKED_EMAILS = 10_000  # cap the failed-login map so it can't exhaust memory
+
+# Security headers added to every response (defense in depth). A strict
+# Content-Security-Policy is intentionally deferred to Phase 3, after inline
+# JS/CSS is moved to static files (a strict CSP would break inline scripts).
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",   # don't let the browser guess content types
+    "X-Frame-Options": "DENY",             # can't be embedded in a frame (clickjacking)
+    "Referrer-Policy": "same-origin",      # don't leak our URLs to other sites
+}
 
 MAX_TITLE_LENGTH = 200
 
@@ -44,6 +54,25 @@ _DUMMY_HASH = bcrypt.hashpw(b"dummy-password-for-timing", bcrypt.gensalt())
 def now():
     """Current time — a seam so tests can fast-forward the clock."""
     return time.time()
+
+
+def prune_failed_logins(failed):
+    """Keep the failed-login map bounded: drop expired locks, and if still
+    over the cap, evict the oldest-tracked emails. Prevents a flood of fake
+    emails from growing the map without limit (memory-DoS)."""
+    current = now()
+    expired = [
+        email
+        for email, entry in failed.items()
+        if entry["locked_until"] is not None and current >= entry["locked_until"]
+    ]
+    for email in expired:
+        failed.pop(email, None)
+
+    # Dicts keep insertion order; pop from the front (oldest) until under cap.
+    while len(failed) > MAX_TRACKED_EMAILS:
+        oldest = next(iter(failed))
+        failed.pop(oldest, None)
 
 
 def validate_credentials(email, password):
@@ -111,6 +140,12 @@ def create_app(config=None):
         db = g.pop("db", None)
         if db is not None:
             db.close()
+
+    @app.after_request
+    def add_security_headers(response):
+        for header, value in SECURITY_HEADERS.items():
+            response.headers.setdefault(header, value)
+        return response
 
     register_csrf_protection(app)
     register_routes(app)
@@ -224,6 +259,7 @@ def register_routes(app):
             entry["count"] += 1
             if entry["count"] >= MAX_FAILED_LOGINS:
                 entry["locked_until"] = now() + LOCKOUT_SECONDS
+            prune_failed_logins(failed)  # keep the map bounded (memory-DoS guard)
             # Same message whether the email exists or the password is wrong.
             return jsonify(error="Invalid email or password."), 401
 

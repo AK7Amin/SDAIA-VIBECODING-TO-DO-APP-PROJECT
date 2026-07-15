@@ -233,3 +233,25 @@ class TestTimingEnumeration:
 
         login(client, email="does-not-exist@example.com", password="whatever")
         assert calls, "no hash performed for unknown email — timing leak"
+
+
+# --- Security fix #6: failed-login map must be bounded (Medium) ---------------
+#
+# The in-memory failed-login dict accepts ANY email, even unregistered ones.
+# An attacker flooding logins with millions of unique fake emails would grow
+# the dict without limit — a memory-exhaustion DoS. The map must stay bounded.
+
+
+class TestFailedLoginMapBounded:
+    def test_map_does_not_grow_without_bound(self, client, monkeypatch):
+        # We're testing the map bound, not hashing — stub bcrypt so this
+        # flood of thousands of logins runs in seconds, not minutes.
+        monkeypatch.setattr(bcrypt, "checkpw", lambda *a, **k: False)
+        failed = client.application.extensions["failed_logins"]
+
+        for i in range(app_module.MAX_TRACKED_EMAILS + 200):
+            login(client, email=f"flood{i}@example.com", password="x")
+
+        assert len(failed) <= app_module.MAX_TRACKED_EMAILS, (
+            f"map grew to {len(failed)} — unbounded, memory-DoS risk"
+        )
