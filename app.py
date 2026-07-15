@@ -15,6 +15,7 @@ import secrets
 import sqlite3
 import time
 
+from datetime import datetime, timezone
 from functools import wraps
 
 import bcrypt
@@ -102,6 +103,23 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 """
 
+# Columns added after the tasks table first shipped. Applied idempotently by
+# migrate_db() so existing databases gain them without losing any data.
+TASK_MIGRATIONS = [
+    ("due_date", "TEXT"),                    # ISO yyyy-mm-dd, or NULL
+    ("priority", "INTEGER NOT NULL DEFAULT 2"),  # 1=low, 2=normal, 3=high
+    ("created_at", "TEXT"),                  # ISO timestamp of creation
+]
+
+
+def migrate_db(con):
+    """Add any missing task columns to an existing database, without touching
+    stored rows. Safe to run on every startup (checks before altering)."""
+    existing = {row[1] for row in con.execute("PRAGMA table_info(tasks)")}
+    for column, definition in TASK_MIGRATIONS:
+        if column not in existing:
+            con.execute(f"ALTER TABLE tasks ADD COLUMN {column} {definition}")
+
 
 def create_app(config=None):
     app = Flask(__name__)
@@ -132,6 +150,8 @@ def create_app(config=None):
     con = sqlite3.connect(app.config["DATABASE"])
     try:
         con.executescript(SCHEMA)
+        migrate_db(con)  # add due_date/priority/created_at to existing DBs
+        con.commit()
     finally:
         con.close()
 
@@ -325,16 +345,59 @@ def validate_title(title):
     return title, None
 
 
+def validate_due_date(value):
+    """Return (iso_date_or_None, error). Empty/absent -> None (no due date)."""
+    value = (value or "").strip()
+    if not value:
+        return None, None
+    try:
+        # strict ISO yyyy-mm-dd; rejects 2026-13-01, 01-08-2026, 2026/08/01, ...
+        parsed = datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        return None, "Due date must be in YYYY-MM-DD format."
+    return parsed.isoformat(), None
+
+
+def validate_priority(value):
+    """Return (int_or_None, error). Empty/absent -> None (caller keeps default)."""
+    value = (value or "").strip()
+    if not value:
+        return None, None
+    if value not in ("1", "2", "3"):
+        return None, "Priority must be 1 (low), 2 (normal), or 3 (high)."
+    return int(value), None
+
+
 def task_to_json(row):
-    return {"id": row["id"], "title": row["title"], "completed": bool(row["completed"])}
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "completed": bool(row["completed"]),
+        "due_date": row["due_date"],
+        "priority": row["priority"],
+    }
 
 
 def register_task_routes(app):
     @app.get("/tasks")
     @login_required
     def list_tasks():
+        # Ordering (all constant SQL, user_id is the only parameter):
+        #   1. active tasks before completed ones
+        #   2. higher priority first (3 -> 1)
+        #   3. earlier due date first; undated tasks sink (NULLs last)
+        #   4. stable tiebreak by id
         rows = get_db().execute(
-            "SELECT id, title, completed FROM tasks WHERE user_id = ? ORDER BY id",
+            """
+            SELECT id, title, completed, due_date, priority
+            FROM tasks
+            WHERE user_id = ?
+            ORDER BY
+                completed ASC,
+                priority DESC,
+                due_date IS NULL, due_date ASC,
+                id ASC
+            """,
             (session["user_id"],),
         ).fetchall()
         return jsonify([task_to_json(r) for r in rows]), 200
@@ -346,13 +409,33 @@ def register_task_routes(app):
         if error:
             return jsonify(error=error), 400
 
+        due_date, error = validate_due_date(request.form.get("due_date"))
+        if error:
+            return jsonify(error=error), 400
+
+        priority, error = validate_priority(request.form.get("priority"))
+        if error:
+            return jsonify(error=error), 400
+        if priority is None:
+            priority = 2  # default: normal
+
         db = get_db()
         cur = db.execute(
-            "INSERT INTO tasks (user_id, title, completed) VALUES (?, ?, 0)",
-            (session["user_id"], title),
+            """
+            INSERT INTO tasks (user_id, title, completed, due_date, priority, created_at)
+            VALUES (?, ?, 0, ?, ?, ?)
+            """,
+            (session["user_id"], title, due_date, priority,
+             datetime.now(timezone.utc).isoformat()),
         )
         db.commit()
-        return jsonify(id=cur.lastrowid, title=title, completed=False), 201
+        return jsonify(
+            id=cur.lastrowid,
+            title=title,
+            completed=False,
+            due_date=due_date,
+            priority=priority,
+        ), 201
 
     @app.patch("/tasks/<int:task_id>")
     @login_required
@@ -361,7 +444,8 @@ def register_task_routes(app):
         # Ownership check: the id is only looked up WITH user_id, so another
         # user's task answers 404 — exactly as if it doesn't exist (no IDOR).
         row = db.execute(
-            "SELECT id, title, completed FROM tasks WHERE id = ? AND user_id = ?",
+            "SELECT id, title, completed, due_date, priority "
+            "FROM tasks WHERE id = ? AND user_id = ?",
             (task_id, session["user_id"]),
         ).fetchone()
         if row is None:
@@ -380,12 +464,32 @@ def register_task_routes(app):
                 return jsonify(error="Invalid value for completed."), 400
             new_completed = 1 if value in ("1", "true") else 0
 
+        new_due_date = row["due_date"]
+        if "due_date" in request.form:
+            new_due_date, error = validate_due_date(request.form.get("due_date"))
+            if error:
+                return jsonify(error=error), 400
+
+        new_priority = row["priority"]
+        if "priority" in request.form:
+            new_priority, error = validate_priority(request.form.get("priority"))
+            if error:
+                return jsonify(error=error), 400
+
         db.execute(
-            "UPDATE tasks SET title = ?, completed = ? WHERE id = ? AND user_id = ?",
-            (new_title, new_completed, task_id, session["user_id"]),
+            "UPDATE tasks SET title = ?, completed = ?, due_date = ?, priority = ? "
+            "WHERE id = ? AND user_id = ?",
+            (new_title, new_completed, new_due_date, new_priority,
+             task_id, session["user_id"]),
         )
         db.commit()
-        return jsonify(id=task_id, title=new_title, completed=bool(new_completed)), 200
+        return jsonify(
+            id=task_id,
+            title=new_title,
+            completed=bool(new_completed),
+            due_date=new_due_date,
+            priority=new_priority,
+        ), 200
 
     @app.delete("/tasks/<int:task_id>")
     @login_required
