@@ -1,3 +1,8 @@
+# Team:
+Abdulaziz Mulia
+Feras Al-Harbi
+Faisal Al-Abdul-Jabbar
+
 # 🔐 Secure To-Do App — تطبيق مهام آمن
 
 > Built for the **SDAIA Vibe Coding workshop** (البرمجة التوليدية) — a simple
