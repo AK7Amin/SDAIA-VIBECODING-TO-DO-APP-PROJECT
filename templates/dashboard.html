@@ -2,55 +2,113 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="csrf-token" content="{{ csrf_token() }}">
 <title>Secure To-Do — My Tasks</title>
 <style>
-  body { font-family: system-ui, sans-serif; background: #f4f5f7; margin: 0; }
-  header { background: white; padding: 1rem 1.5rem; display: flex; justify-content: space-between;
-            align-items: center; border-bottom: 1px solid #e5e7eb; }
-  header h1 { font-size: 1.1rem; margin: 0; }
-  button.logout { background: none; border: 1px solid #d1d5db; border-radius: 6px; padding: .4rem .8rem;
-                   cursor: pointer; color: #444; }
-  main { max-width: 480px; margin: 2rem auto; padding: 0 1rem; }
-  #add-form { display: flex; gap: .5rem; margin-bottom: 1.2rem; }
-  #add-form input { flex: 1; padding: .6rem; border: 1px solid #d1d5db; border-radius: 6px; }
-  #add-form button { padding: .6rem 1rem; border: none; border-radius: 6px; background: #2563eb;
-                      color: white; cursor: pointer; }
-  ul#tasks { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .4rem; }
-  li { background: white; border-radius: 8px; padding: .6rem .8rem; display: flex; align-items: center;
-       gap: .6rem; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
-  li .title { flex: 1; cursor: text; }
-  li .title.completed { text-decoration: line-through; color: #9ca3af; }
-  li input[type=text] { flex: 1; padding: .3rem; border: 1px solid #d1d5db; border-radius: 4px; }
-  li button { border: none; background: none; cursor: pointer; color: #9ca3af; font-size: .95rem; }
-  li button.delete:hover { color: #dc2626; }
-  #empty { color: #9ca3af; text-align: center; padding: 1rem; }
-  #error { color: #dc2626; font-size: .85rem; min-height: 1.2rem; margin-bottom: .5rem; }
+  :root {
+    --bg: #f1f5f9; --card: #ffffff; --line: #e2e8f0; --text: #1e293b;
+    --muted: #64748b; --brand: #4f46e5; --brand-dark: #4338ca;
+    --red: #dc2626; --amber: #d97706; --green: #16a34a;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg);
+         margin: 0; color: var(--text); }
+  header { background: var(--card); padding: 1rem 1.5rem; display: flex;
+           justify-content: space-between; align-items: center;
+           border-bottom: 1px solid var(--line); position: sticky; top: 0; }
+  header h1 { font-size: 1.15rem; margin: 0; display: flex; align-items: center; gap: .5rem; }
+  button.logout { background: none; border: 1px solid var(--line); border-radius: 8px;
+                  padding: .45rem .9rem; cursor: pointer; color: var(--muted); font-size: .9rem; }
+  button.logout:hover { background: var(--bg); }
+  main { max-width: 620px; margin: 1.8rem auto; padding: 0 1rem; }
+
+  /* Add-task card */
+  #add-form { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+              padding: 1rem; margin-bottom: 1.2rem; display: grid;
+              grid-template-columns: 1fr auto auto auto; gap: .6rem; align-items: center; }
+  #add-form input[type=text] { grid-column: 1 / -1; padding: .65rem .8rem; border: 1px solid var(--line);
+                               border-radius: 8px; font-size: .95rem; }
+  #add-form input[type=date], #add-form select { padding: .55rem; border: 1px solid var(--line);
+                                                  border-radius: 8px; font-size: .9rem; color: var(--text); }
+  #add-form button { padding: .6rem 1.2rem; border: none; border-radius: 8px; background: var(--brand);
+                     color: white; cursor: pointer; font-size: .95rem; font-weight: 600; }
+  #add-form button:hover { background: var(--brand-dark); }
+
+  /* Filters */
+  #filters { display: flex; gap: .4rem; margin-bottom: 1rem; flex-wrap: wrap; }
+  .filter { padding: .35rem .8rem; border: 1px solid var(--line); border-radius: 999px;
+            background: var(--card); cursor: pointer; font-size: .85rem; color: var(--muted); }
+  .filter.active { background: var(--brand); color: white; border-color: var(--brand); }
+
+  /* Task list */
+  ul#tasks { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .5rem; }
+  li { background: var(--card); border: 1px solid var(--line); border-left-width: 4px;
+       border-radius: 10px; padding: .7rem .9rem; display: flex; align-items: center; gap: .7rem; }
+  li.prio-3 { border-left-color: var(--red); }
+  li.prio-2 { border-left-color: var(--amber); }
+  li.prio-1 { border-left-color: var(--line); }
+  li input[type=checkbox] { width: 18px; height: 18px; cursor: pointer; flex-shrink: 0; }
+  .task-body { flex: 1; min-width: 0; }
+  .task-title { cursor: text; word-break: break-word; }
+  .task-title.completed { text-decoration: line-through; color: var(--muted); }
+  .task-meta { display: flex; gap: .4rem; margin-top: .3rem; flex-wrap: wrap; }
+  .badge { font-size: .72rem; padding: .12rem .5rem; border-radius: 999px; font-weight: 600; }
+  .badge.due-over { background: #fee2e2; color: var(--red); }
+  .badge.due-today { background: #fef3c7; color: var(--amber); }
+  .badge.due-future { background: #e2e8f0; color: var(--muted); }
+  .badge.prio { background: #eef2ff; color: var(--brand); }
+  li button { border: none; background: none; cursor: pointer; color: #cbd5e1; font-size: 1.1rem;
+              flex-shrink: 0; padding: .2rem .4rem; }
+  li button.delete:hover { color: var(--red); }
+  li input.edit { flex: 1; padding: .4rem; border: 1px solid var(--brand); border-radius: 6px; }
+
+  #empty { color: var(--muted); text-align: center; padding: 2rem; }
+  #error { color: var(--red); font-size: .9rem; min-height: 1.2rem; margin-bottom: .5rem; }
 </style>
 </head>
 <body>
 <header>
-  <h1>My Tasks</h1>
+  <h1>🔐 My Tasks</h1>
   <button class="logout" id="logout">Log out</button>
 </header>
 <main>
   <div id="error"></div>
+
   <form id="add-form">
-    <input type="text" id="new-title" placeholder="Add a task..." maxlength="200" required>
-    <button type="submit">Add</button>
+    <input type="text" id="new-title" placeholder="What needs doing?" maxlength="200" required>
+    <input type="date" id="new-due" title="Due date (optional)">
+    <select id="new-priority" title="Priority">
+      <option value="1">Low</option>
+      <option value="2" selected>Normal</option>
+      <option value="3">High</option>
+    </select>
+    <button type="submit">Add task</button>
   </form>
+
+  <div id="filters">
+    <button class="filter active" data-filter="all">All</button>
+    <button class="filter" data-filter="active">Active</button>
+    <button class="filter" data-filter="completed">Completed</button>
+    <button class="filter" data-filter="overdue">Overdue</button>
+  </div>
+
   <ul id="tasks"></ul>
-  <div id="empty" style="display:none;">No tasks yet — add one above.</div>
+  <div id="empty" style="display:none;">Nothing here yet.</div>
 </main>
 
 <script>
 const list = document.getElementById("tasks");
 const empty = document.getElementById("empty");
 const errorBox = document.getElementById("error");
+const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]').content;
+
+let allTasks = [];
+let currentFilter = "all";
+
+const PRIORITY_LABEL = { 1: "Low", 2: "Normal", 3: "High" };
 
 function showError(msg) { errorBox.textContent = msg || ""; }
-
-const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]').content;
 
 async function api(url, method, data) {
   const opts = { method, headers: { "X-CSRF-Token": CSRF_TOKEN } };
@@ -61,8 +119,36 @@ async function api(url, method, data) {
   return body;
 }
 
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function isOverdue(task) {
+  return !task.completed && task.due_date && task.due_date < todayISO();
+}
+
+/** Build the coloured due-date badge, or null when there's no due date. */
+function dueBadge(task) {
+  if (!task.due_date) return null;
+  const badge = document.createElement("span");
+  badge.className = "badge";
+  const today = todayISO();
+  if (task.due_date < today && !task.completed) {
+    badge.classList.add("due-over");
+    badge.textContent = "⚠ " + task.due_date;
+  } else if (task.due_date === today) {
+    badge.classList.add("due-today");
+    badge.textContent = "Today";
+  } else {
+    badge.classList.add("due-future");
+    badge.textContent = "📅 " + task.due_date;
+  }
+  return badge;
+}
+
 function renderTask(task) {
   const li = document.createElement("li");
+  li.className = "prio-" + task.priority;
 
   const checkbox = document.createElement("input");
   checkbox.type = "checkbox";
@@ -75,15 +161,30 @@ function renderTask(task) {
     } catch (e) { showError(e.message); checkbox.checked = !checkbox.checked; }
   });
 
-  const title = document.createElement("span");
-  title.className = "title" + (task.completed ? " completed" : "");
+  const bodyDiv = document.createElement("div");
+  bodyDiv.className = "task-body";
+
+  const title = document.createElement("div");
+  title.className = "task-title" + (task.completed ? " completed" : "");
   title.textContent = task.title;
   title.title = "Click to edit";
-  title.addEventListener("click", () => startEdit(li, task, title));
+  title.addEventListener("click", () => startEdit(bodyDiv, task, title));
+
+  const meta = document.createElement("div");
+  meta.className = "task-meta";
+  const prio = document.createElement("span");
+  prio.className = "badge prio";
+  prio.textContent = PRIORITY_LABEL[task.priority];
+  meta.appendChild(prio);
+  const due = dueBadge(task);
+  if (due) meta.appendChild(due);
+
+  bodyDiv.append(title, meta);
 
   const del = document.createElement("button");
   del.className = "delete";
-  del.textContent = "Delete";
+  del.textContent = "🗑";
+  del.title = "Delete";
   del.addEventListener("click", async () => {
     if (!confirm(`Delete "${task.title}"?`)) return;
     try {
@@ -93,16 +194,17 @@ function renderTask(task) {
     } catch (e) { showError(e.message); }
   });
 
-  li.append(checkbox, title, del);
+  li.append(checkbox, bodyDiv, del);
   return li;
 }
 
-function startEdit(li, task, titleEl) {
+function startEdit(bodyDiv, task, titleEl) {
   const input = document.createElement("input");
   input.type = "text";
+  input.className = "edit";
   input.value = task.title;
   input.maxLength = 200;
-  li.replaceChild(input, titleEl);
+  bodyDiv.replaceChild(input, titleEl);
   input.focus();
 
   async function save() {
@@ -119,23 +221,44 @@ function startEdit(li, task, titleEl) {
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
 }
 
+function matchesFilter(task) {
+  if (currentFilter === "active") return !task.completed;
+  if (currentFilter === "completed") return task.completed;
+  if (currentFilter === "overdue") return isOverdue(task);
+  return true;
+}
+
+function render() {
+  const shown = allTasks.filter(matchesFilter);
+  list.innerHTML = "";
+  shown.forEach(t => list.appendChild(renderTask(t)));
+  empty.style.display = shown.length ? "none" : "block";
+}
+
 async function loadTasks() {
   const resp = await fetch("/tasks");
   if (resp.status === 302 || resp.redirected) { window.location.href = "/login"; return; }
-  const tasks = await resp.json();
-  list.innerHTML = "";
-  tasks.forEach(t => list.appendChild(renderTask(t)));
-  empty.style.display = tasks.length ? "none" : "block";
+  allTasks = await resp.json();
+  render();
 }
+
+document.getElementById("filters").addEventListener("click", (e) => {
+  if (!e.target.classList.contains("filter")) return;
+  currentFilter = e.target.dataset.filter;
+  document.querySelectorAll(".filter").forEach(f => f.classList.toggle("active", f === e.target));
+  render();
+});
 
 document.getElementById("add-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const input = document.getElementById("new-title");
-  const title = input.value.trim();
+  const titleEl = document.getElementById("new-title");
+  const dueEl = document.getElementById("new-due");
+  const prioEl = document.getElementById("new-priority");
+  const title = titleEl.value.trim();
   if (!title) return;
   try {
-    await api("/tasks", "POST", { title });
-    input.value = "";
+    await api("/tasks", "POST", { title, due_date: dueEl.value, priority: prioEl.value });
+    titleEl.value = ""; dueEl.value = ""; prioEl.value = "2";
     showError("");
     loadTasks();
   } catch (err) { showError(err.message); }
