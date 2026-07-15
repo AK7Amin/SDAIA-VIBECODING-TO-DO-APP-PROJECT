@@ -1,16 +1,33 @@
-"""RED-phase tests for registration & login (PRD section 2, CLAUDE.md sections 1-2).
+"""RED-phase tests for registration & login only (PRD §2, CLAUDE.md §1-2).
 
-Behavior under test:
-1. Registration stores a bcrypt hash, never the plain-text password.
-2. A SQL-injection login attempt must fail and leak nothing.
-3. The 6th login attempt after 5 failures is rate-limited, even with the correct password.
+Three security guarantees are pinned down here, BEFORE any implementation:
+
+  1. Passwords are stored as bcrypt hashes — never plain text.
+  2. SQL-injection login attempts fail, leak nothing, create no session.
+  3. After 5 failed logins the account is rate-limited (HTTP 429),
+     even if the 6th attempt uses the correct password.
+
+Contract these tests impose on the future app.py:
+  - a create_app(config) factory accepting TESTING / DATABASE / SECRET_KEY
+  - a `users` table with `email` and `password_hash` columns
+  - POST /register and POST /login accepting form fields email + password
+  - status codes: 201/302 register ok, 200/302 login ok, 401 bad
+    credentials, 429 rate-limited
 """
 import sqlite3
 
 import bcrypt
+import pytest
 
 EMAIL = "user@example.com"
 PASSWORD = "S3cure!passphrase"
+
+# Classic injection payloads: always-true condition, table drop, comment-out.
+SQL_INJECTION_PAYLOADS = [
+    "' OR '1'='1' --",
+    "'; DROP TABLE users; --",
+    "admin' --",
+]
 
 
 def register(client, email=EMAIL, password=PASSWORD):
@@ -21,14 +38,23 @@ def login(client, email=EMAIL, password=PASSWORD):
     return client.post("/login", data={"email": email, "password": password})
 
 
+def assert_no_session(client):
+    with client.session_transaction() as sess:
+        assert "user_id" not in sess, "a login session was created — it must not be"
+
+
+# --- 1. Registration stores bcrypt, never plain text --------------------------
+
+
 class TestRegistrationHashing:
     def test_register_succeeds(self, client):
         resp = register(client)
         assert resp.status_code in (201, 302)
 
-    def test_password_stored_as_bcrypt_hash_not_plaintext(self, client, db_path):
+    def test_stored_password_is_bcrypt_hash_not_plaintext(self, client, db_path):
         register(client)
 
+        # Read the raw database file directly — the attacker's view of a stolen DB.
         con = sqlite3.connect(db_path)
         try:
             row = con.execute(
@@ -37,44 +63,56 @@ class TestRegistrationHashing:
         finally:
             con.close()
 
-        assert row is not None, "user row was not created"
-        stored = row[0]
-        if isinstance(stored, str):
-            stored = stored.encode("utf-8")
+        assert row is not None, "no user row was created"
+        stored = row[0].encode("utf-8") if isinstance(row[0], str) else row[0]
 
-        assert stored != PASSWORD.encode("utf-8"), "password stored in plain text!"
-        assert stored.startswith(b"$2"), "hash is not bcrypt format ($2a/$2b prefix)"
-        assert bcrypt.checkpw(PASSWORD.encode("utf-8"), stored)
+        assert stored != PASSWORD.encode("utf-8"), "password stored in PLAIN TEXT"
+        assert stored.startswith(b"$2"), "not a bcrypt hash ($2a/$2b prefix missing)"
+        assert bcrypt.checkpw(PASSWORD.encode("utf-8"), stored), (
+            "stored hash does not verify against the original password"
+        )
+
+
+# --- 2. SQL-injection login attempts must fail ---------------------------------
 
 
 class TestLoginSqlInjection:
-    INJECTIONS = [
-        "' OR '1'='1' --",
-        "'; DROP TABLE users; --",
-        "admin' --",
-    ]
-
-    def test_sql_injection_login_attempts_fail(self, client):
+    @pytest.mark.parametrize("payload", SQL_INJECTION_PAYLOADS)
+    def test_injection_as_email_and_password_is_rejected(self, client, payload):
         register(client)
-
-        for payload in self.INJECTIONS:
-            resp = login(client, email=payload, password=payload)
-            assert resp.status_code == 401, f"injection accepted: {payload!r}"
-            with client.session_transaction() as sess:
-                assert "user_id" not in sess, f"session created for: {payload!r}"
+        resp = login(client, email=payload, password=payload)
+        assert resp.status_code == 401, f"injection accepted: {payload!r}"
+        assert_no_session(client)
 
     def test_injection_in_password_field_fails_for_real_email(self, client):
         register(client)
         resp = login(client, email=EMAIL, password="' OR '1'='1' --")
         assert resp.status_code == 401
+        assert_no_session(client)
+
+    def test_users_table_survives_drop_table_attempt(self, client, db_path):
+        register(client)
+        login(client, email="'; DROP TABLE users; --", password="x")
+
+        con = sqlite3.connect(db_path)
+        try:
+            row = con.execute(
+                "SELECT COUNT(*) FROM users"
+            ).fetchone()  # raises if the table was dropped
+        finally:
+            con.close()
+        assert row[0] == 1, "users table lost rows after injection attempt"
 
     def test_error_response_is_generic(self, client):
-        """CLAUDE.md rule: no stack traces or DB details in user-facing errors."""
+        """CLAUDE.md §1: errors must never expose internals to the user."""
         register(client)
         resp = login(client, email="'; DROP TABLE users; --", password="x")
         body = resp.get_data(as_text=True).lower()
         for leak in ("sqlite", "traceback", "syntax error", "select "):
             assert leak not in body, f"error response leaks internals: {leak!r}"
+
+
+# --- 3. Rate limiting: exactly 5 failed attempts -------------------------------
 
 
 class TestLoginRateLimit:
@@ -85,16 +123,16 @@ class TestLoginRateLimit:
             resp = login(client, password="wrong-password")
             assert resp.status_code in (401, 429)
 
-        resp = login(client)  # correct password, but account must now be blocked
-        assert resp.status_code == 429, "rate limit did not trigger after 5 failures"
-        with client.session_transaction() as sess:
-            assert "user_id" not in sess
+        # The lock must hold even when the attacker finally guesses right.
+        resp = login(client)
+        assert resp.status_code == 429, "no rate limit after 5 failed attempts"
+        assert_no_session(client)
 
-    def test_failed_attempts_below_threshold_do_not_block(self, client):
+    def test_four_failures_do_not_block_a_fumbling_real_user(self, client):
         register(client)
 
         for _ in range(4):
             login(client, password="wrong-password")
 
-        resp = login(client)  # correct password on the 5th attempt: allowed
+        resp = login(client)  # correct password on attempt #5 — still allowed
         assert resp.status_code in (200, 302)
