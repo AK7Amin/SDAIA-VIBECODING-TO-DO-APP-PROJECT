@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Secure To-Do — Login</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #f4f5f7; display: flex;
+         align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+  .card { background: white; padding: 2rem; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.08);
+          width: 320px; }
+  h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+  .tabs { display: flex; margin-bottom: 1rem; border-bottom: 1px solid #e2e2e2; }
+  .tab { flex: 1; text-align: center; padding: .5rem; cursor: pointer; color: #888; }
+  .tab.active { color: #2563eb; border-bottom: 2px solid #2563eb; font-weight: 600; }
+  form { display: none; flex-direction: column; gap: .6rem; }
+  form.active { display: flex; }
+  input { padding: .55rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: .95rem; }
+  button { padding: .6rem; border: none; border-radius: 6px; background: #2563eb; color: white;
+           font-size: .95rem; cursor: pointer; }
+  button:hover { background: #1d4ed8; }
+  .msg { min-height: 1.2rem; font-size: .85rem; margin-top: .6rem; }
+  .msg.error { color: #dc2626; }
+  .msg.ok { color: #16a34a; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Secure To-Do</h1>
+    <div class="tabs">
+      <div class="tab active" data-tab="login">Login</div>
+      <div class="tab" data-tab="register">Register</div>
+    </div>
+
+    <form id="login-form" class="active">
+      <input type="email" name="email" placeholder="Email" required>
+      <input type="password" name="password" placeholder="Password" required>
+      <button type="submit">Log in</button>
+    </form>
+
+    <form id="register-form">
+      <input type="email" name="email" placeholder="Email" required>
+      <input type="password" name="password" placeholder="Password" required>
+      <button type="submit">Create account</button>
+    </form>
+
+    <div class="msg" id="msg"></div>
+  </div>
+
+<script>
+const tabs = document.querySelectorAll(".tab");
+const forms = { login: document.getElementById("login-form"), register: document.getElementById("register-form") };
+const msg = document.getElementById("msg");
+
+function showTab(name) {
+  tabs.forEach(t => t.classList.toggle("active", t.dataset.tab === name));
+  Object.entries(forms).forEach(([k, f]) => f.classList.toggle("active", k === name));
+  msg.textContent = "";
+}
+tabs.forEach(t => t.addEventListener("click", () => showTab(t.dataset.tab)));
+
+async function submitForm(form, url, onSuccess) {
+  const body = new URLSearchParams(new FormData(form));
+  const resp = await fetch(url, { method: "POST", body });
+  const data = await resp.json().catch(() => ({}));
+  if (resp.ok) {
+    onSuccess(data);
+  } else {
+    msg.textContent = data.error || "Something went wrong.";
+    msg.className = "msg error";
+  }
+}
+
+forms.login.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  await submitForm(forms.login, "/login", () => { window.location.href = "/dashboard"; });
+});
+
+forms.register.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  await submitForm(forms.register, "/register", () => {
+    msg.textContent = "Registered! Please log in.";
+    msg.className = "msg ok";
+    showTab("login");
+    msg.textContent = "Registered! Please log in.";
+    msg.className = "msg ok";
+  });
+});
+</script>
+</body>
+</html>

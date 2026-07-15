@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Secure To-Do — My Tasks</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #f4f5f7; margin: 0; }
+  header { background: white; padding: 1rem 1.5rem; display: flex; justify-content: space-between;
+            align-items: center; border-bottom: 1px solid #e5e7eb; }
+  header h1 { font-size: 1.1rem; margin: 0; }
+  button.logout { background: none; border: 1px solid #d1d5db; border-radius: 6px; padding: .4rem .8rem;
+                   cursor: pointer; color: #444; }
+  main { max-width: 480px; margin: 2rem auto; padding: 0 1rem; }
+  #add-form { display: flex; gap: .5rem; margin-bottom: 1.2rem; }
+  #add-form input { flex: 1; padding: .6rem; border: 1px solid #d1d5db; border-radius: 6px; }
+  #add-form button { padding: .6rem 1rem; border: none; border-radius: 6px; background: #2563eb;
+                      color: white; cursor: pointer; }
+  ul#tasks { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .4rem; }
+  li { background: white; border-radius: 8px; padding: .6rem .8rem; display: flex; align-items: center;
+       gap: .6rem; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+  li .title { flex: 1; cursor: text; }
+  li .title.completed { text-decoration: line-through; color: #9ca3af; }
+  li input[type=text] { flex: 1; padding: .3rem; border: 1px solid #d1d5db; border-radius: 4px; }
+  li button { border: none; background: none; cursor: pointer; color: #9ca3af; font-size: .95rem; }
+  li button.delete:hover { color: #dc2626; }
+  #empty { color: #9ca3af; text-align: center; padding: 1rem; }
+  #error { color: #dc2626; font-size: .85rem; min-height: 1.2rem; margin-bottom: .5rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>My Tasks</h1>
+  <button class="logout" id="logout">Log out</button>
+</header>
+<main>
+  <div id="error"></div>
+  <form id="add-form">
+    <input type="text" id="new-title" placeholder="Add a task..." maxlength="200" required>
+    <button type="submit">Add</button>
+  </form>
+  <ul id="tasks"></ul>
+  <div id="empty" style="display:none;">No tasks yet — add one above.</div>
+</main>
+
+<script>
+const list = document.getElementById("tasks");
+const empty = document.getElementById("empty");
+const errorBox = document.getElementById("error");
+
+function showError(msg) { errorBox.textContent = msg || ""; }
+
+async function api(url, method, data) {
+  const opts = { method };
+  if (data) opts.body = new URLSearchParams(data);
+  const resp = await fetch(url, opts);
+  const body = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(body.error || "Request failed.");
+  return body;
+}
+
+function renderTask(task) {
+  const li = document.createElement("li");
+
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.checked = task.completed;
+  checkbox.addEventListener("change", async () => {
+    try {
+      await api(`/tasks/${task.id}`, "PATCH", { completed: checkbox.checked ? "1" : "0" });
+      showError("");
+      loadTasks();
+    } catch (e) { showError(e.message); checkbox.checked = !checkbox.checked; }
+  });
+
+  const title = document.createElement("span");
+  title.className = "title" + (task.completed ? " completed" : "");
+  title.textContent = task.title;
+  title.title = "Click to edit";
+  title.addEventListener("click", () => startEdit(li, task, title));
+
+  const del = document.createElement("button");
+  del.className = "delete";
+  del.textContent = "Delete";
+  del.addEventListener("click", async () => {
+    if (!confirm(`Delete "${task.title}"?`)) return;
+    try {
+      await api(`/tasks/${task.id}`, "DELETE");
+      showError("");
+      loadTasks();
+    } catch (e) { showError(e.message); }
+  });
+
+  li.append(checkbox, title, del);
+  return li;
+}
+
+function startEdit(li, task, titleEl) {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = task.title;
+  input.maxLength = 200;
+  li.replaceChild(input, titleEl);
+  input.focus();
+
+  async function save() {
+    const newTitle = input.value.trim();
+    if (newTitle && newTitle !== task.title) {
+      try {
+        await api(`/tasks/${task.id}`, "PATCH", { title: newTitle });
+        showError("");
+      } catch (e) { showError(e.message); }
+    }
+    loadTasks();
+  }
+  input.addEventListener("blur", save);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
+}
+
+async function loadTasks() {
+  const resp = await fetch("/tasks");
+  if (resp.status === 302 || resp.redirected) { window.location.href = "/login"; return; }
+  const tasks = await resp.json();
+  list.innerHTML = "";
+  tasks.forEach(t => list.appendChild(renderTask(t)));
+  empty.style.display = tasks.length ? "none" : "block";
+}
+
+document.getElementById("add-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = document.getElementById("new-title");
+  const title = input.value.trim();
+  if (!title) return;
+  try {
+    await api("/tasks", "POST", { title });
+    input.value = "";
+    showError("");
+    loadTasks();
+  } catch (err) { showError(err.message); }
+});
+
+document.getElementById("logout").addEventListener("click", async () => {
+  await fetch("/logout", { method: "POST" });
+  window.location.href = "/login";
+});
+
+loadTasks();
+</script>
+</body>
+</html>

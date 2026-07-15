@@ -1,3 +1,4 @@
 flask
 bcrypt
 pytest
+python-dotenv

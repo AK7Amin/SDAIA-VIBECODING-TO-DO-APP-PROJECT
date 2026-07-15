@@ -14,7 +14,10 @@ import sqlite3
 from functools import wraps
 
 import bcrypt
-from flask import Flask, g, jsonify, redirect, request, session
+from dotenv import load_dotenv
+from flask import Flask, g, jsonify, redirect, render_template, request, session
+
+load_dotenv()  # reads .env into the environment; .env is git-ignored, never committed
 
 MAX_FAILED_LOGINS = 5
 
@@ -71,6 +74,7 @@ def create_app(config=None):
 
     register_routes(app)
     register_task_routes(app)
+    register_page_routes(app)
     register_error_handlers(app)
     return app
 
@@ -145,6 +149,29 @@ def register_routes(app):
     def logout():
         session.clear()
         return jsonify(message="Logged out."), 200
+
+
+def register_page_routes(app):
+    """HTML pages (login/register screen, task dashboard) for the browser demo.
+
+    These are separate from the /register, /login, /tasks JSON API above —
+    they just serve the pages that call that API with fetch().
+    """
+
+    @app.get("/")
+    def index():
+        return redirect("/dashboard" if "user_id" in session else "/login")
+
+    @app.get("/login")
+    def login_page():
+        if "user_id" in session:
+            return redirect("/dashboard")
+        return render_template("login.html")
+
+    @app.get("/dashboard")
+    @login_required
+    def dashboard_page():
+        return render_template("dashboard.html")
 
 
 def login_required(view):
