@@ -10,6 +10,7 @@ CLAUDE.md §1 rules applied here:
 """
 import os
 import sqlite3
+import time
 
 from functools import wraps
 
@@ -20,8 +21,14 @@ from flask import Flask, g, jsonify, redirect, render_template, request, session
 load_dotenv()  # reads .env into the environment; .env is git-ignored, never committed
 
 MAX_FAILED_LOGINS = 5
+LOCKOUT_SECONDS = 15 * 60  # PRD requires a TEMPORARY block, not a permanent one
 
 MAX_TITLE_LENGTH = 200
+
+
+def now():
+    """Current time — a seam so tests can fast-forward the clock."""
+    return time.time()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -122,9 +129,13 @@ def register_routes(app):
         failed = app.extensions["failed_logins"]
 
         # Check the lock BEFORE the password: once locked, even the correct
-        # password must be refused.
-        if failed.get(email, 0) >= MAX_FAILED_LOGINS:
-            return jsonify(error="Too many attempts. Try again later."), 429
+        # password must be refused — but only until the lock EXPIRES.
+        entry = failed.get(email)
+        if entry and entry["locked_until"] is not None:
+            if now() < entry["locked_until"]:
+                return jsonify(error="Too many attempts. Try again later."), 429
+            # Lock expired: clean slate for this email.
+            failed.pop(email, None)
 
         db = get_db()
         row = db.execute(
@@ -136,7 +147,10 @@ def register_routes(app):
         )
 
         if not ok:
-            failed[email] = failed.get(email, 0) + 1
+            entry = failed.setdefault(email, {"count": 0, "locked_until": None})
+            entry["count"] += 1
+            if entry["count"] >= MAX_FAILED_LOGINS:
+                entry["locked_until"] = now() + LOCKOUT_SECONDS
             # Same message whether the email exists or the password is wrong.
             return jsonify(error="Invalid email or password."), 401
 

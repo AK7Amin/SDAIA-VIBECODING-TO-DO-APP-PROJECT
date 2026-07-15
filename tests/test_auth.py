@@ -15,9 +15,12 @@ Contract these tests impose on the future app.py:
     credentials, 429 rate-limited
 """
 import sqlite3
+import time
 
 import bcrypt
 import pytest
+
+import app as app_module
 
 EMAIL = "user@example.com"
 PASSWORD = "S3cure!passphrase"
@@ -136,3 +139,43 @@ class TestLoginRateLimit:
 
         resp = login(client)  # correct password on attempt #5 — still allowed
         assert resp.status_code in (200, 302)
+
+
+# --- Security fix #1: the lockout must be TEMPORARY (PRD: "temporary block") ---
+#
+# Vulnerability: a permanent lock lets an attacker who merely knows the
+# victim's email fail 5 logins on purpose and lock the victim out FOREVER.
+# The lock must expire, restoring access to the legitimate user.
+
+
+def advance_time(monkeypatch, seconds):
+    """Fake the app's clock: make app.now() report `seconds` in the future.
+
+    raising=False so this is a no-op before the `now` seam exists (RED phase
+    fails on behavior — still locked — not on plumbing).
+    """
+    target = time.time() + seconds
+    monkeypatch.setattr(app_module, "now", lambda: target, raising=False)
+
+
+class TestLockoutExpiry:
+    def test_lock_expires_and_user_can_log_in_again(self, client, monkeypatch):
+        register(client)
+        for _ in range(5):
+            login(client, password="wrong-password")
+        assert login(client).status_code == 429  # locked, as designed
+
+        # 15 minutes + 1 second later, the rightful owner must get back in.
+        advance_time(monkeypatch, app_module.LOCKOUT_SECONDS + 1)
+        resp = login(client)
+        assert resp.status_code == 200, "lockout never expires — permanent DoS"
+
+    def test_lock_still_holds_just_before_expiry(self, client, monkeypatch):
+        register(client)
+        for _ in range(5):
+            login(client, password="wrong-password")
+
+        # One minute before the window ends: still locked, even with the
+        # correct password.
+        advance_time(monkeypatch, app_module.LOCKOUT_SECONDS - 60)
+        assert login(client).status_code == 429
