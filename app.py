@@ -11,16 +11,27 @@ CLAUDE.md §1 rules applied here:
 import os
 import sqlite3
 
+from functools import wraps
+
 import bcrypt
-from flask import Flask, g, jsonify, request, session
+from flask import Flask, g, jsonify, redirect, request, session
 
 MAX_FAILED_LOGINS = 5
+
+MAX_TITLE_LENGTH = 200
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     email         TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id   INTEGER NOT NULL REFERENCES users(id),
+    title     TEXT NOT NULL,
+    completed INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -59,6 +70,7 @@ def create_app(config=None):
             db.close()
 
     register_routes(app)
+    register_task_routes(app)
     register_error_handlers(app)
     return app
 
@@ -133,6 +145,110 @@ def register_routes(app):
     def logout():
         session.clear()
         return jsonify(message="Logged out."), 200
+
+
+def login_required(view):
+    """Reject anonymous requests: redirect to /login (PRD UX flow item 7)."""
+
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if "user_id" not in session:
+            return redirect("/login")
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def validate_title(title):
+    """Return (clean_title, error). Title: required, max length, no HTML."""
+    title = (title or "").strip()
+    if not title:
+        return None, "Title is required."
+    if len(title) > MAX_TITLE_LENGTH:
+        return None, f"Title must be at most {MAX_TITLE_LENGTH} characters."
+    if "<" in title or ">" in title:
+        # Reject rather than escape: no HTML ever enters the database,
+        # so nothing can leak unescaped into a page later (XSS).
+        return None, "Title contains invalid characters."
+    return title, None
+
+
+def task_to_json(row):
+    return {"id": row["id"], "title": row["title"], "completed": bool(row["completed"])}
+
+
+def register_task_routes(app):
+    @app.get("/tasks")
+    @login_required
+    def list_tasks():
+        rows = get_db().execute(
+            "SELECT id, title, completed FROM tasks WHERE user_id = ? ORDER BY id",
+            (session["user_id"],),
+        ).fetchall()
+        return jsonify([task_to_json(r) for r in rows]), 200
+
+    @app.post("/tasks")
+    @login_required
+    def create_task():
+        title, error = validate_title(request.form.get("title"))
+        if error:
+            return jsonify(error=error), 400
+
+        db = get_db()
+        cur = db.execute(
+            "INSERT INTO tasks (user_id, title, completed) VALUES (?, ?, 0)",
+            (session["user_id"], title),
+        )
+        db.commit()
+        return jsonify(id=cur.lastrowid, title=title, completed=False), 201
+
+    @app.patch("/tasks/<int:task_id>")
+    @login_required
+    def update_task(task_id):
+        db = get_db()
+        # Ownership check: the id is only looked up WITH user_id, so another
+        # user's task answers 404 — exactly as if it doesn't exist (no IDOR).
+        row = db.execute(
+            "SELECT id, title, completed FROM tasks WHERE id = ? AND user_id = ?",
+            (task_id, session["user_id"]),
+        ).fetchone()
+        if row is None:
+            return jsonify(error="Not found."), 404
+
+        new_title = row["title"]
+        if "title" in request.form:
+            new_title, error = validate_title(request.form.get("title"))
+            if error:
+                return jsonify(error=error), 400
+
+        new_completed = row["completed"]
+        if "completed" in request.form:
+            value = (request.form.get("completed") or "").strip().lower()
+            if value not in ("0", "1", "true", "false"):
+                return jsonify(error="Invalid value for completed."), 400
+            new_completed = 1 if value in ("1", "true") else 0
+
+        db.execute(
+            "UPDATE tasks SET title = ?, completed = ? WHERE id = ? AND user_id = ?",
+            (new_title, new_completed, task_id, session["user_id"]),
+        )
+        db.commit()
+        return jsonify(id=task_id, title=new_title, completed=bool(new_completed)), 200
+
+    @app.delete("/tasks/<int:task_id>")
+    @login_required
+    def delete_task(task_id):
+        db = get_db()
+        # Explicit WHERE with BOTH id and owner (CLAUDE.md: no DELETE without
+        # explicit WHERE). rowcount 0 means not yours / not there: 404.
+        cur = db.execute(
+            "DELETE FROM tasks WHERE id = ? AND user_id = ?",
+            (task_id, session["user_id"]),
+        )
+        db.commit()
+        if cur.rowcount == 0:
+            return jsonify(error="Not found."), 404
+        return jsonify(message="Deleted."), 200
 
 
 def register_error_handlers(app):
